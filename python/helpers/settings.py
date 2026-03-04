@@ -156,6 +156,9 @@ class Settings(TypedDict):
     # LiteLLM global kwargs applied to all model calls
     litellm_global_kwargs: dict[str, Any]
 
+    max_message_loop_iterations: int
+    max_repeated_tool_calls: int
+
     update_check_enabled: bool
 
 
@@ -598,6 +601,8 @@ def get_default_settings() -> Settings:
         variables="",
         secrets="",
         litellm_global_kwargs=get_default_value("litellm_global_kwargs", {}),
+        max_message_loop_iterations=get_default_value("max_message_loop_iterations", 25),
+        max_repeated_tool_calls=get_default_value("max_repeated_tool_calls", 5),
         update_check_enabled=get_default_value("update_check_enabled", True),
     )
 

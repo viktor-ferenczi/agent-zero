@@ -18,7 +18,8 @@ from python.helpers import (
     tokens,
     context as context_helper,
     dirty_json,
-    subagents
+    subagents,
+    settings as agent_settings,
 )
 from python.helpers.print_style import PrintStyle
 
@@ -335,6 +336,10 @@ class LoopData:
         self.params_temporary: dict = {}
         self.params_persistent: dict = {}
         self.current_tool = None
+        self.consecutive_failures = 0
+        self.last_tool_call: str = ""
+        self.repeated_tool_call_count: int = 0
+        self.iteration_limit_warned: bool = False
 
         # override values with kwargs
         for key, value in kwargs.items():
@@ -397,6 +402,24 @@ class Agent:
                     self.context.streaming_agent = self  # mark self as current streamer
                     self.loop_data.iteration += 1
                     self.loop_data.params_temporary = {}  # clear temporary params
+
+                    # Guard against infinite message loops (two-phase)
+                    max_iterations = agent_settings.get_settings().get("max_message_loop_iterations", 25)
+                    if self.loop_data.iteration >= max_iterations:
+                        if self.loop_data.iteration_limit_warned:
+                            # Phase 2: already warned, hard stop
+                            error_msg = f"Maximum message loop iterations exceeded. Forcing stop."
+                            self.hist_add_warning(error_msg)
+                            self.context.log.log(type="error", content=f"{self.agent_name}: {error_msg}")
+                            PrintStyle(font_color="red", padding=True).print(error_msg)
+                            return error_msg
+                        else:
+                            # Phase 1: warn the model to wrap up
+                            self.loop_data.iteration_limit_warned = True
+                            warn_msg = f"You have reached the maximum of {max_iterations} iterations. Stop researching and provide your final answer now using the response tool, even if it is incomplete."
+                            self.hist_add_warning(warn_msg)
+                            PrintStyle(font_color="orange", padding=True).print(warn_msg)
+                            self.context.log.log(type="warning", content=f"{self.agent_name}: {warn_msg}")
 
                     # call message_loop_start extensions
                     await self.call_extensions(
@@ -482,14 +505,29 @@ class Agent:
                                 warning_msg
                             )
                             self.context.log.log(type="warning", content=warning_msg)
+                            self.loop_data.consecutive_failures += 1
+                            if self.loop_data.consecutive_failures >= 3:
+                                error_msg = "Agent is stuck in a loop (repeated responses). Stopping."
+                                self.hist_add_warning(error_msg)
+                                self.context.log.log(type="error", content=f"{self.agent_name}: {error_msg}")
+                                PrintStyle(font_color="red", padding=True).print(error_msg)
+                                return error_msg
 
                         else:  # otherwise proceed with tool
+                            self.loop_data.consecutive_failures = 0  # reset on non-repeat
                             # Append the assistant's response to the history
                             self.hist_add_ai_response(agent_response)
                             # process tools requested in agent message
                             tools_result = await self.process_tools(agent_response)
                             if tools_result:  # final response of message loop available
                                 return tools_result  # break the execution if the task is done
+                            # check for consecutive misformat/error failures
+                            if self.loop_data.consecutive_failures >= 3:
+                                error_msg = "Agent is stuck (repeated misformat/errors). Stopping."
+                                self.hist_add_warning(error_msg)
+                                self.context.log.log(type="error", content=f"{self.agent_name}: {error_msg}")
+                                PrintStyle(font_color="red", padding=True).print(error_msg)
+                                return error_msg
 
                         error_retries = 0  # reset retry counter on successful iteration
 
@@ -860,6 +898,22 @@ class Agent:
             raw_tool_name = tool_request.get("tool_name", tool_request.get("tool",""))  # Get the raw tool name
             tool_args = tool_request.get("tool_args", tool_request.get("args", {}))
 
+            # Detect repeated identical tool calls
+            tool_call_signature = repr((raw_tool_name, tool_args))
+            if tool_call_signature == self.loop_data.last_tool_call:
+                self.loop_data.repeated_tool_call_count += 1
+                max_repeats = agent_settings.get_settings().get("max_repeated_tool_calls", 5)
+                if self.loop_data.repeated_tool_call_count >= max_repeats:
+                    warning_msg = f"You have issued the same tool call {self.loop_data.repeated_tool_call_count} times. Try something else."
+                    self.hist_add_warning(warning_msg)
+                    PrintStyle(font_color="orange", padding=True).print(warning_msg)
+                    self.context.log.log(type="warning", content=f"{self.agent_name}: {warning_msg}")
+                    self.loop_data.consecutive_failures += 1
+                    return  # skip execution, let the agent try again
+            else:
+                self.loop_data.last_tool_call = tool_call_signature
+                self.loop_data.repeated_tool_call_count = 1
+
             tool_name = raw_tool_name  # Initialize tool_name with raw_tool_name
             tool_method = None  # Initialize tool_method
 
@@ -923,6 +977,7 @@ class Agent:
 
                     await tool.after_execution(response)
                     await self.handle_intervention()
+                    self.loop_data.consecutive_failures = 0  # reset on successful tool execution
 
                     if response.break_loop:
                         return response.message
@@ -937,6 +992,7 @@ class Agent:
                 self.context.log.log(
                     type="warning", content=f"{self.agent_name}: {error_detail}"
                 )
+                self.loop_data.consecutive_failures += 1
         else:
             warning_msg_misformat = self.read_prompt("fw.msg_misformat.md")
             self.hist_add_warning(warning_msg_misformat)
@@ -945,6 +1001,7 @@ class Agent:
                 type="warning",
                 content=f"{self.agent_name}: Message misformat, no valid tool request found.",
             )
+            self.loop_data.consecutive_failures += 1
 
     async def handle_reasoning_stream(self, stream: str):
         await self.handle_intervention()
