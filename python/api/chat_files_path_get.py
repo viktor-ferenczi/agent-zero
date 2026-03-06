@@ -1,6 +1,6 @@
 from python.helpers.api import ApiHandler, Request, Response
-from python.helpers import files, memory, notification, projects, notification, runtime, settings
-import os
+from python.helpers import files
+from python.helpers.workdir import get_context_workdir
 
 
 class GetChatFilesPath(ApiHandler):
@@ -10,11 +10,8 @@ class GetChatFilesPath(ApiHandler):
             raise Exception("No context id provided")
         context = self.use_context(ctxid)
 
-        project_name = projects.get_context_project_name(context)
-        if project_name:
-            folder = files.normalize_a0_path(projects.get_project_folder(project_name))
-        else:
-            folder = settings.get_settings()["workdir_path"]
+        folder = get_context_workdir(context)
+        folder = files.normalize_a0_path(folder)
 
         return {
             "ok": True,

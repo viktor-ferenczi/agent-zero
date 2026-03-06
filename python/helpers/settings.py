@@ -102,6 +102,7 @@ class Settings(TypedDict):
     workdir_max_folders: int
     workdir_max_lines: int
     workdir_gitignore: str
+    workdir_per_conversation: bool
 
     memory_recall_enabled: bool
     memory_recall_delayed: bool
@@ -578,6 +579,7 @@ def get_default_settings() -> Settings:
         workdir_max_folders=get_default_value("workdir_max_folders", 20),
         workdir_max_lines=get_default_value("workdir_max_lines", 250),
         workdir_gitignore=get_default_value("workdir_gitignore", gitignore),
+        workdir_per_conversation=get_default_value("workdir_per_conversation", True),
         rfc_auto_docker=get_default_value("rfc_auto_docker", True),
         rfc_url=get_default_value("rfc_url", "localhost"),
         rfc_password="",

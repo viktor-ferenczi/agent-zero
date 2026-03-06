@@ -29,6 +29,21 @@
 
           <div class="field">
             <div class="field-label">
+              <div class="field-title">Per-conversation workdir</div>
+              <div class="field-description">
+                Each conversation gets its own subdirectory under the workdir path, named by context ID. Prevents file collisions between conversations.
+              </div>
+            </div>
+            <div class="field-control">
+              <label class="toggle">
+                <input type="checkbox" x-model="$store.settings.settings.workdir_per_conversation" />
+                <span class="toggler"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label">
               <div class="field-title">Show workdir structure to the agent</div>
               <div class="field-description">
                 When turned on, the workdir file structure will be injected into the context window of the agent.

@@ -5,6 +5,7 @@ from python.helpers import settings
 from python.helpers import runtime
 from python.helpers import file_tree
 from python.helpers import files
+from python.helpers.workdir import get_context_workdir
 
 class IncludeWorkdirExtras(Extension):
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
@@ -41,14 +42,14 @@ class IncludeWorkdirExtras(Extension):
 
             if not enabled:
                 return
-            
+
             max_depth = set["workdir_max_depth"]
             max_files = set["workdir_max_files"]
             max_folders = set["workdir_max_folders"]
             max_lines = set["workdir_max_lines"]
             gitignore_raw = set["workdir_gitignore"]
 
-            folder = set["workdir_path"]
+            folder = get_context_workdir(self.agent.context)
             scan_path = files.get_abs_path_development(folder)
 
             files.create_dir(scan_path)

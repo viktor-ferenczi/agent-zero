@@ -474,12 +474,8 @@ class CodeExecution(Tool):
         return output
 
     async def ensure_cwd(self) -> str | None:
-        project_name = projects.get_context_project_name(self.agent.context)
-        if project_name:
-            path = projects.get_project_folder(project_name)
-        else:
-            set = settings.get_settings()
-            path = set.get("workdir_path")
+        from python.helpers.workdir import get_context_workdir
+        path = get_context_workdir(self.agent.context)
 
         if not path:
             return None
