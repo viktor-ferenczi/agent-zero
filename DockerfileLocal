@@ -2,6 +2,8 @@
 # FROM agent-zero-base:local
 FROM agent0ai/agent-zero-base:latest
 
+SHELL ["/bin/bash", "-c"]
+
 # Set BRANCH to "local" if not provided
 ARG BRANCH=local
 ENV BRANCH=$BRANCH
