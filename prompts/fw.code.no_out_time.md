@@ -1,1 +1,3 @@
 Returning control to agent after {{timeout}} seconds with no output. Process might be still running. Check previous outputs and decide whether to reset and continue or wait for more output is needed.
+
+IMPORTANT: If the command used heredoc syntax (`cat << EOF`, `cat << 'EOF'`), it likely hung. Use `reset: true` to reset the session, then use `python3 -c "..."` or `tee` to write file contents instead.

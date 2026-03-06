@@ -1,1 +1,3 @@
 Terminal session {{session}} might be still running. Check previous outputs and decide whether to reset and continue or wait for more output is needed.
+
+IMPORTANT: If the session appears stuck (e.g. from a heredoc `cat << EOF` or multiline input), use `reset: true` to reset it. Do NOT retry the same command. Instead, use `python3 -c "..."` or `tee` to write file contents, avoiding heredoc syntax which can hang in non-interactive terminals.

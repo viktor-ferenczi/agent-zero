@@ -33,6 +33,7 @@ class ShellWrap:
     id: int
     session: LocalInteractiveSession | SSHInteractiveSession
     running: bool
+    stuck_count: int = 0  # Track consecutive "still running" detections for auto-reset
 
 @dataclass
 class State:
@@ -44,10 +45,11 @@ class CodeExecution(Tool):
 
     # Common shell prompt regex patterns (add more as needed)
     prompt_patterns = [
-        re.compile(r"\\(venv\\).+[$#] ?$"),  # (venv) ...$ or (venv) ...#
+        re.compile(r"\(venv\).+[$#] ?$"),  # (venv) ...$ or (venv) ...#
         re.compile(r"root@[^:]+:[^#]+# ?$"),  # root@container:~#
         re.compile(r"[a-zA-Z0-9_.-]+@[^:]+:[^$#]+[$#] ?$"),  # user@host:~$
         re.compile(r"\(?.*\)?\s*PS\s+[^>]+> ?$"),  # PowerShell prompt like (base) PS C:\...>
+        re.compile(r"[$#] ?$"),  # generic prompt ending with $ or #
     ]
     # potential dialog detection
     dialog_patterns = [
@@ -55,6 +57,7 @@ class CodeExecution(Tool):
         re.compile(r"yes/no", re.IGNORECASE),  # yes/no anywhere in line
         re.compile(r":\s*$"),  # line ending with colon
         re.compile(r"\?\s*$"),  # line ending with question mark
+        re.compile(r"^> ?$"),  # heredoc/continuation prompt (just ">")
     ]
 
     async def execute(self, **kwargs) -> Response:
@@ -372,17 +375,20 @@ class CodeExecution(Tool):
                                 )
                                 return response
 
+    # Auto-reset threshold: after this many consecutive "still running" detections, auto-reset the session
+    STUCK_SESSION_AUTO_RESET_THRESHOLD = 3
+
     async def handle_running_session(
         self,
         session=0,
-        reset_full_output=True, 
+        reset_full_output=True,
         prefix=""
     ):
         if not self.state or session not in self.state.shells:
             return None
         if not self.state.shells[session].running:
             return None
-        
+
         full_output, _ = await self.state.shells[session].session.read_output(
             timeout=1, reset_full_output=reset_full_output
         )
@@ -403,7 +409,18 @@ class CodeExecution(Tool):
                     self.mark_session_idle(session)
                     return None
 
-        has_dialog = False 
+        # Track consecutive stuck detections and auto-reset if threshold exceeded
+        self.state.shells[session].stuck_count += 1
+        if self.state.shells[session].stuck_count >= self.STUCK_SESSION_AUTO_RESET_THRESHOLD:
+            PrintStyle(font_color="#FFA500", bold=True).print(
+                f"Session {session} stuck {self.state.shells[session].stuck_count} times, auto-resetting..."
+            )
+            return await self.reset_terminal(
+                session=session,
+                reason=f"Auto-reset after {self.state.shells[session].stuck_count} consecutive stuck detections"
+            )
+
+        has_dialog = False
         for line in last_lines:
             for pat in self.dialog_patterns:
                 if pat.search(line.strip()):
@@ -413,7 +430,7 @@ class CodeExecution(Tool):
                 break
 
         if has_dialog:
-            sys_info = self.agent.read_prompt("fw.code.pause_dialog.md", timeout=1)       
+            sys_info = self.agent.read_prompt("fw.code.pause_dialog.md", timeout=1)
         else:
             sys_info = self.agent.read_prompt("fw.code.running.md", session=session)
 
@@ -428,6 +445,7 @@ class CodeExecution(Tool):
         # Mark session as idle - command finished
         if self.state and session in self.state.shells:
             self.state.shells[session].running = False
+            self.state.shells[session].stuck_count = 0
 
     async def reset_terminal(self, session=0, reason: str | None = None):
         # Print the reason for the reset to the console if provided
