@@ -6,26 +6,34 @@ FROM agent0ai/agent-zero-base:latest
 ARG BRANCH=local
 ENV BRANCH=$BRANCH
 
-# Copy filesystem files to root
+# 1. Copy install/runtime scripts (rarely change)
 COPY ./docker/run/fs/ /
-# Copy current development files to git, they will only be used in "local" branch
-COPY ./ /git/agent-zero
 
-# pre installation steps
+# 2. Pre-installation: apt update, SSH setup (no source code needed)
 RUN bash /ins/pre_install.sh $BRANCH
 
-# install A0
-RUN bash /ins/install_A0.sh $BRANCH
+# 3. Copy ONLY dependency manifests (change rarely)
+COPY requirements.txt requirements2.txt /tmp/deps/
 
-# install additional software
-RUN bash /ins/install_additional.sh $BRANCH
+# 4. Install Python dependencies (CACHED unless requirements change)
+RUN . /ins/setup_venv.sh $BRANCH && \
+    uv pip install -r /tmp/deps/requirements.txt && \
+    uv pip install -r /tmp/deps/requirements2.txt && \
+    rm -rf /tmp/deps
 
-# cleanup repo and install A0 without caching, this speeds up builds
-ARG CACHE_DATE=none
-RUN echo "cache buster $CACHE_DATE" && bash /ins/install_A02.sh $BRANCH
+# 5. Install Playwright + Chromium (CACHED, rarely changes)
+RUN bash /ins/install_playwright.sh $BRANCH
 
-# post installation steps
+# 6. Copy full source code LAST (changes frequently during dev)
+COPY ./ /git/agent-zero
+
+# 7. Preload models (needs full source tree)
+RUN . /ins/setup_venv.sh $BRANCH && \
+    python /git/agent-zero/preload.py --dockerized=true
+
+# 8. Cleanup
 RUN bash /ins/post_install.sh $BRANCH
+RUN . /ins/setup_venv.sh $BRANCH && pip cache purge && uv cache prune
 
 # Expose ports
 EXPOSE 22 80 9000-9009
