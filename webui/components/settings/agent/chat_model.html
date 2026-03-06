@@ -144,6 +144,18 @@
             </div>
           </div>
 
+          <div class="field">
+            <div class="field-label">
+              <div class="field-title">Reasoning token limit</div>
+              <div class="field-description">
+                Maximum number of reasoning/thinking tokens before interrupting with "Try differently". Set to 0 to disable.
+              </div>
+            </div>
+            <div class="field-control">
+              <input type="number" x-model.number="$store.settings.settings.chat_model_reasoning_token_limit" />
+            </div>
+          </div>
+
           <div class="field field-full">
             <div class="field-label">
               <div class="field-title">Chat model additional parameters</div>

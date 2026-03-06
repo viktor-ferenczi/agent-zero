@@ -63,6 +63,7 @@ class Settings(TypedDict):
     chat_model_rl_requests: int
     chat_model_rl_input: int
     chat_model_rl_output: int
+    chat_model_reasoning_token_limit: int
 
     util_model_provider: str
     util_model_name: str
@@ -527,6 +528,7 @@ def get_default_settings() -> Settings:
         chat_model_rl_requests=get_default_value("chat_model_rl_requests", 0),
         chat_model_rl_input=get_default_value("chat_model_rl_input", 0),
         chat_model_rl_output=get_default_value("chat_model_rl_output", 0),
+        chat_model_reasoning_token_limit=get_default_value("chat_model_reasoning_token_limit", 100000),
         util_model_provider=get_default_value("util_model_provider", "openrouter"),
         util_model_name=get_default_value("util_model_name", "google/gemini-3-flash-preview"),
         util_model_api_base=get_default_value("util_model_api_base", ""),

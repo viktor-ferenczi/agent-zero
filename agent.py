@@ -438,7 +438,10 @@ class Agent:
                         await self.handle_intervention()
 
 
+                        reasoning_token_count = 0
+
                         async def reasoning_callback(chunk: str, full: str):
+                            nonlocal reasoning_token_count
                             await self.handle_intervention()
                             if chunk == full:
                                 printer.print("Reasoning: ")  # start of reasoning
@@ -454,6 +457,12 @@ class Agent:
                                 printer.stream(stream_data["chunk"])
                             # Use the potentially modified full text for downstream processing
                             await self.handle_reasoning_stream(stream_data["full"])
+
+                            # Check reasoning token limit
+                            reasoning_token_count += tokens.approximate_tokens(chunk)
+                            limit = agent_settings.get_settings().get("chat_model_reasoning_token_limit", 100000)
+                            if limit > 0 and reasoning_token_count >= limit:
+                                self.intervention = f"Your reasoning was getting too long ({reasoning_token_count} tokens). Try a different, shorter approach."
 
                         async def stream_callback(chunk: str, full: str):
                             await self.handle_intervention()
