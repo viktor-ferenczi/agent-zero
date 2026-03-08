@@ -1,5 +1,5 @@
-# Use the latest slim version of Kali Linux
-FROM kalilinux/kali-rolling
+# Debian Bookworm with Python 3.13 and uv pre-installed
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm
 
 
 # Set locale to en_US.UTF-8 and timezone to UTC
