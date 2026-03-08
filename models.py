@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 import logging
 import os
+
+_fallback_logger = logging.getLogger("agent_zero.fallback")
 from typing import (
     Any,
     Awaitable,
@@ -504,72 +506,130 @@ class LiteLLMChatWrapper(SimpleChatModel):
         # results
         result = ChatGenerationResult()
 
-        attempt = 0
-        while True:
-            got_any_chunk = False
-            try:
-                # call model
-                _completion = await acompletion(
-                    model=self.model_name,
-                    messages=msgs_conv,
-                    stream=stream,
-                    **call_kwargs,
-                )
+        try:
+            attempt = 0
+            while True:
+                got_any_chunk = False
+                try:
+                    # call model
+                    _completion = await acompletion(
+                        model=self.model_name,
+                        messages=msgs_conv,
+                        stream=stream,
+                        **call_kwargs,
+                    )
 
-                if stream:
-                    # iterate over chunks
-                    async for chunk in _completion:  # type: ignore
-                        got_any_chunk = True
-                        # parse chunk
-                        parsed = _parse_chunk(chunk)
+                    if stream:
+                        # iterate over chunks
+                        async for chunk in _completion:  # type: ignore
+                            got_any_chunk = True
+                            # parse chunk
+                            parsed = _parse_chunk(chunk)
+                            output = result.add_chunk(parsed)
+
+                            # collect reasoning delta and call callbacks
+                            if output["reasoning_delta"]:
+                                if reasoning_callback:
+                                    await reasoning_callback(output["reasoning_delta"], result.reasoning)
+                                if tokens_callback:
+                                    await tokens_callback(
+                                        output["reasoning_delta"],
+                                        approximate_tokens(output["reasoning_delta"]),
+                                    )
+                                # Add output tokens to rate limiter if configured
+                                if limiter:
+                                    limiter.add(output=approximate_tokens(output["reasoning_delta"]))
+                            # collect response delta and call callbacks
+                            if output["response_delta"]:
+                                if response_callback:
+                                    await response_callback(output["response_delta"], result.response)
+                                if tokens_callback:
+                                    await tokens_callback(
+                                        output["response_delta"],
+                                        approximate_tokens(output["response_delta"]),
+                                    )
+                                # Add output tokens to rate limiter if configured
+                                if limiter:
+                                    limiter.add(output=approximate_tokens(output["response_delta"]))
+
+                    # non-stream response
+                    else:
+                        parsed = _parse_chunk(_completion)
                         output = result.add_chunk(parsed)
-
-                        # collect reasoning delta and call callbacks
-                        if output["reasoning_delta"]:
-                            if reasoning_callback:
-                                await reasoning_callback(output["reasoning_delta"], result.reasoning)
-                            if tokens_callback:
-                                await tokens_callback(
-                                    output["reasoning_delta"],
-                                    approximate_tokens(output["reasoning_delta"]),
-                                )
-                            # Add output tokens to rate limiter if configured
-                            if limiter:
-                                limiter.add(output=approximate_tokens(output["reasoning_delta"]))
-                        # collect response delta and call callbacks
-                        if output["response_delta"]:
-                            if response_callback:
-                                await response_callback(output["response_delta"], result.response)
-                            if tokens_callback:
-                                await tokens_callback(
-                                    output["response_delta"],
-                                    approximate_tokens(output["response_delta"]),
-                                )
-                            # Add output tokens to rate limiter if configured
-                            if limiter:
+                        if limiter:
+                            if output["response_delta"]:
                                 limiter.add(output=approximate_tokens(output["response_delta"]))
+                            if output["reasoning_delta"]:
+                                limiter.add(output=approximate_tokens(output["reasoning_delta"]))
 
-                # non-stream response
-                else:
-                    parsed = _parse_chunk(_completion)
+                    # Successful completion of stream
+                    return result.response, result.reasoning
+
+                except Exception as e:
+                    import asyncio
+
+                    # Retry only if no chunks received and error is transient
+                    if got_any_chunk or not _is_transient_litellm_error(e) or attempt >= max_retries:
+                        raise
+                    attempt += 1
+                    await asyncio.sleep(retry_delay_s)
+
+        except Exception as primary_error:
+            # Fallback to local model if configured
+            fallback = _get_fallback_chat_model()
+            if fallback is None:
+                raise
+
+            _fallback_logger.warning(
+                "Primary chat model '%s' failed (%s: %s). Falling back to '%s'.",
+                self.model_name,
+                type(primary_error).__name__,
+                primary_error,
+                fallback.model_name,
+            )
+
+            # Build fallback kwargs: carry over non-identity params from original call
+            fallback_call_kwargs = {**fallback.kwargs}
+            for k, v in call_kwargs.items():
+                if k not in ("api_key", "api_base"):
+                    fallback_call_kwargs[k] = v
+
+            result = ChatGenerationResult()
+            _completion = await acompletion(
+                model=fallback.model_name,
+                messages=msgs_conv,
+                stream=stream,
+                **fallback_call_kwargs,
+            )
+
+            if stream:
+                async for chunk in _completion:  # type: ignore
+                    parsed = _parse_chunk(chunk)
                     output = result.add_chunk(parsed)
-                    if limiter:
-                        if output["response_delta"]:
-                            limiter.add(output=approximate_tokens(output["response_delta"]))
-                        if output["reasoning_delta"]:
+                    if output["reasoning_delta"]:
+                        if reasoning_callback:
+                            await reasoning_callback(output["reasoning_delta"], result.reasoning)
+                        if tokens_callback:
+                            await tokens_callback(output["reasoning_delta"], approximate_tokens(output["reasoning_delta"]))
+                        if limiter:
                             limiter.add(output=approximate_tokens(output["reasoning_delta"]))
+                    if output["response_delta"]:
+                        if response_callback:
+                            await response_callback(output["response_delta"], result.response)
+                        if tokens_callback:
+                            await tokens_callback(output["response_delta"], approximate_tokens(output["response_delta"]))
+                        if limiter:
+                            limiter.add(output=approximate_tokens(output["response_delta"]))
+            else:
+                parsed = _parse_chunk(_completion)
+                output = result.add_chunk(parsed)
+                if limiter:
+                    if output["response_delta"]:
+                        limiter.add(output=approximate_tokens(output["response_delta"]))
+                    if output["reasoning_delta"]:
+                        limiter.add(output=approximate_tokens(output["reasoning_delta"]))
 
-                # Successful completion of stream
-                return result.response, result.reasoning
-
-            except Exception as e:
-                import asyncio
-
-                # Retry only if no chunks received and error is transient
-                if got_any_chunk or not _is_transient_litellm_error(e) or attempt >= max_retries:
-                    raise
-                attempt += 1
-                await asyncio.sleep(retry_delay_s)
+            return result.response, result.reasoning
 
 
 class AsyncAIChatReplacement:
@@ -627,13 +687,14 @@ class BrowserCompatibleChatWrapper(ChatOpenRouter):
         # Apply rate limiting if configured
         apply_rate_limiter_sync(self._wrapper.a0_model_conf, str(messages))
 
+        # Prepare kwargs before try block so post-processing can access them in both paths
+        model = kwargs.pop("model", None)
+        kwrgs = {**self._wrapper.kwargs, **kwargs}
+
         # Call the model
         try:
-            model = kwargs.pop("model", None)
-            kwrgs = {**self._wrapper.kwargs, **kwargs}
-
             # hack from browser-use to fix json schema for gemini (additionalProperties, $defs, $ref)
-            if "response_format" in kwrgs and "json_schema" in kwrgs["response_format"] and model.startswith("gemini/"):
+            if "response_format" in kwrgs and "json_schema" in kwrgs["response_format"] and model and model.startswith("gemini/"):
                 kwrgs["response_format"]["json_schema"] = ChatGoogle("")._fix_gemini_schema(kwrgs["response_format"]["json_schema"])
 
             resp = await acompletion(
@@ -653,8 +714,27 @@ class BrowserCompatibleChatWrapper(ChatOpenRouter):
             except Exception:
                 pass
 
-        except Exception as e:
-            raise e
+        except Exception as primary_error:
+            # Fallback to local browser model if configured
+            fallback = _get_fallback_browser_model()
+            if fallback is None:
+                raise
+
+            _fallback_logger.warning(
+                "Primary browser model '%s' failed (%s: %s). Falling back to '%s'.",
+                self._wrapper.model_name,
+                type(primary_error).__name__,
+                primary_error,
+                fallback._wrapper.model_name,
+            )
+
+            fallback_kwrgs = {**fallback._wrapper.kwargs, **kwargs}
+            resp = await acompletion(
+                model=fallback._wrapper.model_name,
+                messages=messages,
+                stop=stop,
+                **fallback_kwrgs,
+            )
 
         # another hack for browser-use post process invalid jsons
         try:
@@ -750,6 +830,36 @@ class LocalSentenceTransformerWrapper(Embeddings):
             embedding[0].tolist() if hasattr(embedding[0], "tolist") else embedding[0]
         )
         return result  # type: ignore
+
+
+def _get_fallback_chat_model() -> Optional[LiteLLMChatWrapper]:
+    """Build a fallback LiteLLMChatWrapper from FALLBACK_CHAT_* env vars, or None if not configured."""
+    model_name = dotenv.get_dotenv_value("FALLBACK_CHAT_MODEL_NAME")
+    if not model_name:
+        return None
+    kwargs: dict[str, Any] = {}
+    api_url = dotenv.get_dotenv_value("FALLBACK_CHAT_API_URL")
+    api_key = dotenv.get_dotenv_value("FALLBACK_CHAT_API_KEY")
+    if api_url:
+        kwargs["api_base"] = api_url
+    if api_key:
+        kwargs["api_key"] = api_key
+    return LiteLLMChatWrapper(provider="openai", model=model_name, model_config=None, **kwargs)
+
+
+def _get_fallback_browser_model() -> Optional["BrowserCompatibleChatWrapper"]:
+    """Build a fallback BrowserCompatibleChatWrapper from FALLBACK_BROWSER_* env vars, or None if not configured."""
+    model_name = dotenv.get_dotenv_value("FALLBACK_BROWSER_MODEL_NAME")
+    if not model_name:
+        return None
+    kwargs: dict[str, Any] = {}
+    api_url = dotenv.get_dotenv_value("FALLBACK_BROWSER_API_URL")
+    api_key = dotenv.get_dotenv_value("FALLBACK_BROWSER_API_KEY")
+    if api_url:
+        kwargs["api_base"] = api_url
+    if api_key:
+        kwargs["api_key"] = api_key
+    return BrowserCompatibleChatWrapper(provider="openai", model=model_name, model_config=None, **kwargs)
 
 
 def _get_litellm_chat(
